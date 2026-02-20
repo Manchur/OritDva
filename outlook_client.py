@@ -184,8 +184,9 @@ def export_emails_from_sender(
     """
     Export emails received FROM a specific sender to text files for style analysis.
     
-    Searches the Inbox (and optionally other folders) for emails from the 
-    given email address and saves them as .txt files.
+    Uses Outlook's Restrict() filter for fast server-side filtering, then
+    falls back to full scan if the filter returns no results (e.g. Exchange
+    addresses that don't match the SMTP filter).
     
     Args:
         sender_email: The email address to filter by (e.g. "boris@example.com")
@@ -198,43 +199,85 @@ def export_emails_from_sender(
     output_dir = output_dir or config.STYLE_SAMPLES_DIR
     os.makedirs(output_dir, exist_ok=True)
 
+    print(f"  [1/5] Connecting to Outlook...")
     outlook = get_outlook()
     namespace = get_namespace(outlook)
+    print(f"  [1/5] ✅ Connected to Outlook")
 
     # Search in Inbox (6 = olFolderInbox)
+    print(f"  [2/5] Opening Inbox folder...")
     inbox = namespace.GetDefaultFolder(6)
-    messages = inbox.Items
-    messages.Sort("[ReceivedTime]", True)  # newest first
-
-    exported = 0
-    skipped_existing = 0
-    scanned = 0
+    all_messages = inbox.Items
+    total_inbox = all_messages.Count
+    print(f"  [2/5] ✅ Inbox has {total_inbox} total emails")
 
     sender_lower = sender_email.lower().strip()
 
-    for item in messages:
+    # --- Try fast Restrict() filter first ---
+    print(f"  [3/5] Filtering emails from '{sender_email}'...")
+    try:
+        restriction = f"[SenderEmailAddress] = '{sender_email}'"
+        filtered = all_messages.Restrict(restriction)
+        filtered_count = filtered.Count
+        print(f"  [3/5] ✅ Restrict filter found {filtered_count} emails (SMTP match)")
+    except Exception as e:
+        print(f"  [3/5] ⚠ Restrict filter failed ({e}), will do full scan")
+        filtered_count = 0
+        filtered = None
+
+    # If filter found results, use them; otherwise fall back to full scan
+    if filtered_count > 0:
+        messages_to_scan = filtered
+        scan_count = filtered_count
+        use_filter = True
+    else:
+        # Fall back — might be Exchange addresses  
+        print(f"  [3/5] ℹ No SMTP matches, falling back to scan (handles Exchange addresses)")
+        messages_to_scan = all_messages
+        scan_count = total_inbox
+        use_filter = False
+
+    messages_to_scan.Sort("[ReceivedTime]", True)  # newest first
+
+    exported = 0
+    skipped_existing = 0
+    skipped_short = 0
+    scanned = 0
+    errors = 0
+
+    print(f"  [4/5] Scanning {scan_count} emails...")
+
+    for item in messages_to_scan:
         if exported >= max_count:
+            print(f"  [4/5] Reached max count ({max_count}), stopping")
             break
 
         scanned += 1
-        # Progress indicator every 50 emails
-        if scanned % 50 == 0:
-            print(f"  ... scanned {scanned} emails, exported {exported} so far")
+
+        # Progress indicator every 10 emails (more frequent for visibility)
+        if scanned % 10 == 0:
+            pct = int(scanned / scan_count * 100) if scan_count else 0
+            print(f"  [4/5] ... {scanned}/{scan_count} ({pct}%) — exported: {exported}")
 
         try:
-            # Resolve the sender's actual SMTP address
-            item_sender = ""
-            try:
-                if item.SenderEmailType == "EX":
-                    item_sender = item.Sender.GetExchangeUser().PrimarySmtpAddress
-                else:
-                    item_sender = item.SenderEmailAddress
-            except Exception:
-                item_sender = item.SenderEmailAddress or ""
+            # If we already used Restrict(), we know the sender matches (for SMTP)
+            # but still need to verify for Exchange addresses in full-scan mode
+            if not use_filter:
+                item_sender = ""
+                try:
+                    if item.SenderEmailType == "EX":
+                        exchg = item.Sender.GetExchangeUser()
+                        if exchg:
+                            item_sender = exchg.PrimarySmtpAddress or ""
+                        else:
+                            item_sender = item.SenderEmailAddress or ""
+                    else:
+                        item_sender = item.SenderEmailAddress or ""
+                except Exception:
+                    item_sender = item.SenderEmailAddress or ""
 
-            # Check if this email is from the target sender
-            if item_sender.lower().strip() != sender_lower:
-                continue
+                if item_sender.lower().strip() != sender_lower:
+                    continue
 
             subject = item.Subject or "no_subject"
             body = item.Body or ""
@@ -242,6 +285,7 @@ def export_emails_from_sender(
 
             # Skip very short emails
             if len(body.strip()) < 20:
+                skipped_short += 1
                 continue
 
             # Create a safe filename
@@ -255,9 +299,18 @@ def export_emails_from_sender(
                 skipped_existing += 1
                 continue
 
+            # Resolve sender info for the file header
+            try:
+                if use_filter:
+                    sender_display = item.SenderEmailAddress or sender_email
+                else:
+                    sender_display = item_sender
+            except Exception:
+                sender_display = sender_email
+
             # Format the email content
             content = (
-                f"From: {item.SenderName} <{item_sender}>\n"
+                f"From: {item.SenderName} <{sender_display}>\n"
                 f"Subject: {subject}\n"
                 f"Received: {received_time}\n"
                 f"{'=' * 50}\n\n"
@@ -268,14 +321,24 @@ def export_emails_from_sender(
                 f.write(content)
 
             exported += 1
+            print(f"  [4/5] 📄 Saved: {filename}")
 
         except Exception as e:
-            print(f"  ⚠ Could not process message: {e}")
+            errors += 1
+            if errors <= 5:  # Only show first 5 errors
+                print(f"  ⚠ Error on email #{scanned}: {e}")
             continue
 
-    print(f"  📊 Scanned {scanned} emails total")
+    # Summary
+    print(f"\n  [5/5] ─── Collection Summary ───")
+    print(f"  📊 Scanned: {scanned} emails")
+    print(f"  ✅ Exported: {exported} emails")
     if skipped_existing > 0:
-        print(f"  ℹ Skipped {skipped_existing} already-exported emails")
+        print(f"  ℹ Already exported: {skipped_existing}")
+    if skipped_short > 0:
+        print(f"  ℹ Skipped (too short): {skipped_short}")
+    if errors > 0:
+        print(f"  ⚠ Errors: {errors}")
 
     return exported
 
