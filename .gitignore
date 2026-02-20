@@ -5,3 +5,6 @@ venv/
 .venv/
 style_profile.json
 samples/
+dist/
+build/
+*.spec
