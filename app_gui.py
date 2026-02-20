@@ -144,14 +144,56 @@ class OritDvaApp:
         notebook.add(self.log_tab, text="  📋  Log  ")
         self._build_log_tab()
 
+    def _enable_clipboard(self, widget):
+        """Enable Ctrl+V, Ctrl+C, Ctrl+A on a widget."""
+        def paste(event):
+            try:
+                text = widget.clipboard_get()
+                # If there's a selection, replace it
+                try:
+                    widget.delete("sel.first", "sel.last")
+                except tk.TclError:
+                    pass
+                widget.insert("insert", text)
+            except tk.TclError:
+                pass
+            return "break"
+
+        def copy(event):
+            try:
+                widget.clipboard_clear()
+                text = widget.selection_get()
+                widget.clipboard_append(text)
+            except tk.TclError:
+                pass
+            return "break"
+
+        def select_all(event):
+            widget.select_range(0, tk.END)
+            widget.icursor(tk.END)
+            return "break"
+
+        widget.bind("<Control-v>", paste)
+        widget.bind("<Control-V>", paste)
+        widget.bind("<Control-c>", copy)
+        widget.bind("<Control-C>", copy)
+        widget.bind("<Control-a>", select_all)
+        widget.bind("<Control-A>", select_all)
+
     def _build_setup_tab(self):
         f = self.setup_tab
         pad = {"padx": 20, "pady": 5}
 
         ttk.Label(f, text="Gemini API Key:").pack(anchor="w", **pad)
         self.api_key_var = tk.StringVar(value=config.GEMINI_API_KEY or "")
-        key_entry = ttk.Entry(f, textvariable=self.api_key_var, show="•", width=60)
+        key_entry = tk.Entry(
+            f, textvariable=self.api_key_var, show="•", width=60,
+            bg="#282840", fg="#e0e0e0", insertbackground="#e0e0e0",
+            font=("Segoe UI", 10), relief="flat", bd=4,
+            selectbackground="#7c3aed", selectforeground="white"
+        )
         key_entry.pack(anchor="w", padx=20, pady=(0, 5))
+        self._enable_clipboard(key_entry)
 
         ttk.Label(f, text="Samples Directory:").pack(anchor="w", **pad)
         dir_frame = ttk.Frame(f)
