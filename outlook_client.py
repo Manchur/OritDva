@@ -206,9 +206,23 @@ def export_emails_from_sender(
 
     # Search in Inbox (6 = olFolderInbox)
     print(f"  [2/5] Opening Inbox folder...")
-    inbox = namespace.GetDefaultFolder(6)
-    all_messages = inbox.Items
-    total_inbox = all_messages.Count
+    try:
+        inbox = namespace.GetDefaultFolder(6)
+        all_messages = inbox.Items
+        total_inbox = all_messages.Count
+    except Exception as e:
+        error_msg = str(e)
+        print(f"\n  ❌ Could not open Outlook Inbox!")
+        print(f"  Error: {error_msg}")
+        if ".ost" in error_msg.lower() or "data file" in error_msg.lower() or "נתונים" in error_msg:
+            print(f"\n  🔧 This is an Outlook data file (.ost) problem.")
+            print(f"  Try these fixes:")
+            print(f"    1. Close Outlook completely, then reopen it")
+            print(f"    2. Go to Control Panel → Mail → Data Files and repair")
+            print(f"    3. Or delete the .ost file (Outlook will recreate it)")
+        else:
+            print(f"\n  🔧 Make sure Outlook is open and you're signed in.")
+        return 0
     print(f"  [2/5] ✅ Inbox has {total_inbox} total emails")
 
     sender_lower = sender_email.lower().strip()
